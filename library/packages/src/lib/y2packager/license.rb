@@ -38,18 +38,16 @@ module Y2Packager
       # This method uses a cache to return the same license if it was already
       # used for another product.
       #
-      # @param product_name [String]       Product's name
-      # @param source       [:libzypp,nil] Source to get the license from. For the time being,
-      #   only :libzypp is supported.
-      # @param content      [String]   License content. If this argument is given, this
-      #   string is used as the license's content (and `source` is ignored).
-      # @return [License]
-      def find(product_name, source: nil, content: nil)
+      # @param product_name [String] Product's name
+      # @param content      [String] License content. If this argument is given, this
+      #   string is used as the license's content (and `product_name` is ignored).
+      #
+      # @return [License, nil]
+      def find(product_name, content: nil)
         log.info "Searching for a license for product #{product_name}"
         return cache[product_name] if cache[product_name]
 
-        fetcher = source ? LicensesFetchers.for(source, product_name) : nil
-        new_license = License.new(fetcher: fetcher, content: content)
+        new_license = License.new(product_name: product_name, content: content)
         return unless new_license.id
 
         eq_license = cache.values.find { |l| l.id == new_license.id }
@@ -87,18 +85,15 @@ module Y2Packager
     #
     # Bear in mind that `fetcher` will be ignored if `content` is specified.
     #
-    # @param fetcher [:libzypp] Fetcher to retrieve licenses information. For the time
-    #   being, only :libzypp is supported.
-    # @param content [String]   License content. If this argument is given, this
-    #   string is used as the license's content (and `source` is ignored).
-    def initialize(fetcher: nil, content: nil)
+    # @param product_name [String] Product name to retrieve license information
+    # @param content      [String] License content. If this argument is given, this
+    #   string is used as the license's content (and `product_name` is ignored).
+    def initialize(product_name: nil, content: nil)
       @accepted = false
       @translations = {}
-      if content
-        add_content_for(DEFAULT_LANG, content)
-      else
-        @fetcher = fetcher
-      end
+      @product_name = product_name
+
+      add_content_for(DEFAULT_LANG, content) if content
     end
 
     # License unique identifier
@@ -116,29 +111,52 @@ module Y2Packager
     # Return the license translated content for the given language
     #
     # @param lang [String] Contents' language
-    # @return [String,nil] the license translated content or nil if not found
+    #
+    # @return [String, nil] the license translated content or nil if not found
     def content_for(lang = DEFAULT_LANG)
       return @translations[lang] if @translations[lang]
-      return nil unless fetcher
-      content = fetcher.content(lang)
-      return add_content_for(lang, content) if content
-    end
 
-    # Return license's available locales
-    #
-    # @return [Array<String>] List of available locales
-    def locales
-      return [DEFAULT_LANG] unless fetcher
-      fetcher.locales
+      [:libzypp, :rpm].each do |source|
+        log.info "Trying to get the license for #{product_name} from #{source}"
+        content = LicensesFetchers.for(source, product_name).content(lang)
+
+        return add_content_for(lang, content) unless content.to_s.empty?
+      end
+
+      nil
     end
 
     # Add the license translated content for the given language
     #
     # @param lang    [String] Language to add the translation to
     # @param content [String] Content to add
+    #
     # @return [String] the license translated content
     def add_content_for(lang, content)
       @translations[lang] = content
+    end
+
+    # Return available locales for product's license
+    #
+    # @return [Array<String>] Language codes ("de_DE", "en_US", etc.)
+    def locales
+      locales = Yast::Pkg.PrdLicenseLocales(product_name)
+      if locales.nil?
+        log.error "Error getting the list of available license translations for '#{product_name}'"
+
+        return [License::DEFAULT_LANG]
+      end
+
+      empty_idx = locales.index("")
+      locales[empty_idx] = License::DEFAULT_LANG if empty_idx
+      locales
+    end
+
+    # Determine whether the license should be accepted or not
+    #
+    # @return [Boolean] true if the license acceptance is required
+    def confirmation_required?
+      Yast::Pkg.PrdNeedToAcceptLicense(product_name)
     end
 
     # Set the license as accepted
@@ -153,7 +171,7 @@ module Y2Packager
 
   private
 
-    # @return [Y2Packager::LicensesFetchers::Base] License fetcher object
-    attr_reader :fetcher
+    # @return [String] Product name
+    attr_reader :product_name
   end
 end
