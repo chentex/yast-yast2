@@ -225,6 +225,7 @@ module Y2Packager
     #
     # @return [Boolean] true if the license acceptance is required
     def license_confirmation_required?
+      return false unless license?
       license.confirmation_required?
     end
 
